@@ -1,0 +1,288 @@
+import React, { useMemo, useState } from "react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, CartesianGrid } from "recharts";
+
+// --- Helper functions ---
+const CURRENCY_SIGNS: Record<string, string> = {
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  INR: "₹",
+  JPY: "¥",
+};
+
+const compoundOptions = [
+  { label: "Daily (365)", value: 365 },
+  { label: "Weekly (52)", value: 52 },
+  { label: "Monthly (12)", value: 12 },
+  { label: "Quarterly (4)", value: 4 },
+  { label: "Yearly (1)", value: 1 },
+];
+
+const contributionFreqs = [
+  { label: "None", value: 0 },
+  { label: "Daily", value: 365 },
+  { label: "Weekly", value: 52 },
+  { label: "Monthly", value: 12 },
+  { label: "Quarterly", value: 4 },
+  { label: "Yearly", value: 1 },
+];
+
+function formatMoney(v: number, currency: keyof typeof CURRENCY_SIGNS) {
+  if (!isFinite(v)) return "-";
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(v);
+  } catch (e) {
+    // Fallback if locale/currency unsupported
+    return `${CURRENCY_SIGNS[currency] ?? ""}${v.toFixed(2)}`;
+  }
+}
+
+// Core simulation (period-by-period) so results are intuitive and flexible
+function simulate({
+  principal,
+  years,
+  annualRatePct,
+  compoundsPerYear,
+  contribution,
+  contributionPerYear,
+  contributionTiming, // "start" | "end"
+}: {
+  principal: number;
+  years: number;
+  annualRatePct: number;
+  compoundsPerYear: number;
+  contribution: number; // amount per contribution event
+  contributionPerYear: number; // how many times contributions happen per year (0 for none)
+  contributionTiming: "start" | "end";
+}) {
+  const n = Math.max(1, Math.round(compoundsPerYear));
+  const totalPeriods = Math.max(0, Math.round(years * n));
+  const r = annualRatePct / 100;
+  const i = r / n; // periodic rate
+
+  const contributionStep = contributionPerYear > 0 ? Math.round(n / contributionPerYear) : 0; // every X periods
+
+  let balance = principal;
+  let totalContrib = 0;
+  let totalInterest = 0;
+
+  const rows: Array<{ idx: number; year: number; period: number; balance: number; interest: number; contrib: number; }> = [];
+
+  // Add optional contribution at t=0 if timing is "start"
+  if (contributionPerYear > 0 && contributionTiming === "start") {
+    balance += contribution; totalContrib += contribution;
+    rows.push({ idx: 0, year: 0, period: 0, balance, interest: 0, contrib: contribution });
+  } else {
+    rows.push({ idx: 0, year: 0, period: 0, balance, interest: 0, contrib: 0 });
+  }
+
+  for (let p = 1; p <= totalPeriods; p++) {
+    // 1) interest accrues on current balance
+    const interest = balance * i;
+    balance += interest;
+    totalInterest += interest;
+
+    // 2) contribution events (at exact steps)
+    let contrib = 0;
+    if (contributionPerYear > 0 && contributionStep > 0 && (p % contributionStep === 0)) {
+      contrib = contribution;
+      balance += contribution;
+      totalContrib += contribution;
+    }
+
+    rows.push({
+      idx: p,
+      year: Math.floor(p / n),
+      period: p,
+      balance,
+      interest,
+      contrib,
+    });
+  }
+
+  return { rows, summary: { endingBalance: balance, totalInterest, totalContrib } };
+}
+
+// --- UI ---
+export default function App() {
+  const [principal, setPrincipal] = useState(100000);
+  const [rate, setRate] = useState(8);
+  const [years, setYears] = useState(5);
+  const [compound, setCompound] = useState(365);
+  const [currency, setCurrency] = useState<keyof typeof CURRENCY_SIGNS>("INR");
+  const [contribAmt, setContribAmt] = useState(0);
+  const [contribFreq, setContribFreq] = useState(12);
+  const [contribTiming, setContribTiming] = useState<"start" | "end">("end");
+  const [showSchedule, setShowSchedule] = useState(false);
+
+  const { rows, summary } = useMemo(() => simulate({
+    principal: Number(principal) || 0,
+    years: Number(years) || 0,
+    annualRatePct: Number(rate) || 0,
+    compoundsPerYear: Number(compound) || 1,
+    contribution: Number(contribAmt) || 0,
+    contributionPerYear: Number(contribFreq) || 0,
+    contributionTiming: contribTiming,
+  }), [principal, years, rate, compound, contribAmt, contribFreq, contribTiming]);
+
+  const yearlyData = useMemo(() => {
+    const n = Math.max(1, Math.round(compound));
+    const map: Record<number, { year: number; balance: number; contributions: number; interest: number; }>
+      = {};
+    let cumContrib = 0;
+    let cumInterest = 0;
+    for (const r of rows) {
+      cumInterest += r.interest;
+      cumContrib += r.contrib;
+      if (r.period % n === 0) {
+        map[r.year] = { year: r.year, balance: r.balance, contributions: cumContrib, interest: cumInterest };
+      }
+    }
+    return Object.values(map);
+  }, [rows, compound]);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 text-slate-800">
+      <div className="max-w-5xl mx-auto px-4 py-8">
+        <header className="mb-6">
+          <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">Daily Compound Interest Calculator</h1>
+          <p className="text-slate-600 mt-2">Fast, accurate, and beautiful. Supports daily compounding, flexible contributions, and exportable schedule.</p>
+        </header>
+
+        <div className="grid md:grid-cols-3 gap-4">
+          <div className="md:col-span-2 bg-white rounded-2xl shadow p-4 md:p-6">
+            <h2 className="text-xl font-semibold mb-4">Inputs</h2>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <label className="flex flex-col gap-1">
+                <span className="text-sm text-slate-600">Currency</span>
+                <select className="border rounded-xl px-3 py-2" value={currency} onChange={(e)=> setCurrency(e.target.value as any)}>
+                  {Object.keys(CURRENCY_SIGNS).map(k => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-sm text-slate-600">Initial amount</span>
+                <input type="number" className="border rounded-xl px-3 py-2" value={principal} onChange={e=> setPrincipal(Number(e.target.value))} min={0} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-sm text-slate-600">Annual interest rate (%)</span>
+                <input type="number" step="0.01" className="border rounded-xl px-3 py-2" value={rate} onChange={e=> setRate(Number(e.target.value))} min={0} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-sm text-slate-600">Years</span>
+                <input type="number" className="border rounded-xl px-3 py-2" value={years} onChange={e=> setYears(Number(e.target.value))} min={0} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-sm text-slate-600">Compounding frequency</span>
+                <select className="border rounded-xl px-3 py-2" value={compound} onChange={e=> setCompound(Number(e.target.value))}>
+                  {compoundOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-sm text-slate-600">Contribution amount</span>
+                  <input type="number" className="border rounded-xl px-3 py-2" value={contribAmt} onChange={e=> setContribAmt(Number(e.target.value))} min={0} />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-sm text-slate-600">Contribution frequency</span>
+                  <select className="border rounded-xl px-3 py-2" value={contribFreq} onChange={e=> setContribFreq(Number(e.target.value))}>
+                    {contributionFreqs.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 col-span-2">
+                  <input type="radio" name="timing" checked={contribTiming === "start"} onChange={()=> setContribTiming("start")} />
+                  <span className="text-sm">Add first contribution at start</span>
+                </label>
+                <label className="flex items-center gap-2 col-span-2">
+                  <input type="radio" name="timing" checked={contribTiming === "end"} onChange={()=> setContribTiming("end")} />
+                  <span className="text-sm">Add contributions at period ends</span>
+                </label>
+              </div>
+              <label className="flex items-center gap-2 mt-2 col-span-2">
+                <input type="checkbox" checked={showSchedule} onChange={(e)=> setShowSchedule(e.target.checked)} />
+                <span className="text-sm">Show detailed schedule</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow p-4 md:p-6">
+            <h2 className="text-xl font-semibold mb-3">Results</h2>
+            <ul className="space-y-2 text-sm">
+              <li className="flex justify-between"><span>Final balance</span><strong>{formatMoney(summary.endingBalance, currency)}</strong></li>
+              <li className="flex justify-between"><span>Total contributions</span><strong>{formatMoney(summary.totalContrib, currency)}</strong></li>
+              <li className="flex justify-between"><span>Total interest earned</span><strong>{formatMoney(summary.totalInterest, currency)}</strong></li>
+            </ul>
+            <div className="mt-4 h-56">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={yearlyData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="year" tickFormatter={(y)=> `Y${y}`} />
+                  <YAxis tickFormatter={(v)=> formatMoney(v, currency)} width={80} />
+                  <Tooltip formatter={(v: any)=> formatMoney(Number(v), currency)} labelFormatter={(l)=> `Year ${l}`} />
+                  <Legend />
+                  <Line type="monotone" dataKey="balance" name="Balance" dot={false} strokeWidth={2} />
+                  <Line type="monotone" dataKey="contributions" name="Contributions" dot={false} strokeWidth={2} />
+                  <Line type="monotone" dataKey="interest" name="Interest (cum)" dot={false} strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+
+        {showSchedule && (
+          <div className="bg-white rounded-2xl shadow p-4 md:p-6 mt-4 overflow-auto">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xl font-semibold">Schedule (each compounding period)</h2>
+              <button
+                className="px-3 py-2 rounded-xl bg-slate-900 text-white text-sm hover:opacity-90"
+                onClick={() => {
+                  // create CSV
+                  const header = ["Period","Year","Interest","Contribution","Balance"]; 
+                  const csv = [header.join(","), ...rows.map(r => [r.period, r.year, r.interest.toFixed(2), r.contrib.toFixed(2), r.balance.toFixed(2)].join(","))].join("\n");
+                  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url; a.download = 'compound_schedule.csv'; a.click();
+                  setTimeout(()=> URL.revokeObjectURL(url), 5000);
+                }}
+              >Download CSV</button>
+            </div>
+            <div className="max-h-[480px] overflow-auto border rounded-xl">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr>
+                    <th className="text-left p-2">Period</th>
+                    <th className="text-left p-2">Year</th>
+                    <th className="text-right p-2">Interest</th>
+                    <th className="text-right p-2">Contribution</th>
+                    <th className="text-right p-2">Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr key={r.idx} className="odd:bg-white even:bg-slate-50">
+                      <td className="p-2">{r.period}</td>
+                      <td className="p-2">{r.year}</td>
+                      <td className="p-2 text-right">{formatMoney(r.interest, currency)}</td>
+                      <td className="p-2 text-right">{formatMoney(r.contrib, currency)}</td>
+                      <td className="p-2 text-right font-medium">{formatMoney(r.balance, currency)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        <footer className="text-xs text-slate-500 mt-8">
+          <p>
+            Notes: Contributions are added at the end of each contribution interval (or once at start if selected). Interest accrues each compounding period at r/n on the current balance. This is a numerical simulation, not financial advice.
+          </p>
+        </footer>
+      </div>
+    </div>
+  );
+}
